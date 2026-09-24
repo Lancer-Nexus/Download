@@ -5,6 +5,14 @@ var options = DownloadServerOptions.FromConfiguration(builder.Configuration);
 builder.Services.AddSingleton(options);
 
 var app = builder.Build();
+var logger = app.Logger;
+var stableManifestPath = Path.Combine(options.ManifestRoot, "stable", $"{options.Platform}-{options.Architecture}.json");
+logger.LogInformation(
+    "Download service starting for {Platform}/{Architecture}; artifact storage {ArtifactStorageStatus}; stable manifest {ManifestStatus}.",
+    options.Platform,
+    options.Architecture,
+    Directory.Exists(options.ArtifactRoot) ? "available" : "missing",
+    File.Exists(stableManifestPath) ? "available" : "missing");
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));
 app.MapGet("/health/ready", (DownloadServerOptions settings) =>
     Directory.Exists(settings.ArtifactRoot)
