@@ -9,6 +9,10 @@ The Download Server publishes signed manifests and immutable client/game-data ar
 - Keep signing operations separate from public artifact serving  
 The Download Server does not authenticate game sessions and does not replace the Gateway.
 
-## Skeleton runtime
+## Runtime
 
-The .NET 10 minimal host currently exposes `/health/live`, `/health/ready`, channel manifests under `/v1/channels/{channel}/manifest`, bootstrapper manifests and hash-addressed artifacts under `/v1/artifacts/{prefix}/{sha256}`. Configure `Download:ManifestRoot` and `Download:ArtifactRoot`; the service never accepts arbitrary filesystem paths or manifest URLs. Signature generation/publication is intentionally outside this public serving process.
+The .NET 10 host exposes `/health/live`, `/health/ready`, signed channel manifests at `/v1/channels/{channel}/manifest`, bootstrapper manifests, and immutable artifacts at `/v1/artifacts/{first-two-sha256-characters}/{sha256}`. Artifacts support byte ranges, SHA-256 ETags, conditional `304` responses, one-year immutable caching, and content-length reporting. Manifests use a content-derived ETag and `no-cache` so clients revalidate them. Invalid hash prefixes and unsafe channel/platform/architecture segments are rejected.
+
+Configure `Download:ManifestRoot` and `Download:ArtifactRoot`. Store manifests as `<root>/<channel>/<platform>-<architecture>.json` and artifacts as `<root>/sha256/<prefix>/<sha256>`. The service never accepts arbitrary filesystem paths or manifest URLs. Signature generation and publication stay outside this public serving process.
+
+Run endpoint integration tests with `dotnet test Tests/Download.Tests.csproj -c Release`.
