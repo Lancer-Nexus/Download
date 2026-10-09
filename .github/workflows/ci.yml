@@ -15,7 +15,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet restore
-      - run: dotnet format --verify-no-changes --no-restore
-      - run: dotnet build --configuration Release --no-restore --warnaserror
-      - run: dotnet test --configuration Release --no-build --logger trx --collect:"XPlat Code Coverage"
+      - run: dotnet restore Download.csproj
+      - run: dotnet restore Tests/Download.Tests.csproj
+      - run: dotnet format Download.csproj --verify-no-changes --no-restore
+      - run: dotnet format Tests/Download.Tests.csproj --verify-no-changes --no-restore
+      - run: dotnet build Tests/Download.Tests.csproj --configuration Release --no-restore --warnaserror
+      - run: dotnet test Tests/Download.Tests.csproj --configuration Release --no-build --logger trx --collect:"XPlat Code Coverage"
