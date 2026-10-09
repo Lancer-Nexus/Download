@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Lancer-Nexus/Updater
-          ref: 48b4053a16c815e354c0c0ad9ddfc7656c2b150e
+          ref: ba5833343e7c770528901b2db9de9197938d76bf
           path: Lancer-Nexus/Updater
       - uses: actions/setup-dotnet@v4
         with:
