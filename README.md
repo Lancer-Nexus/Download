@@ -16,3 +16,7 @@ The .NET 10 host exposes `/health/live`, `/health/ready`, signed channel manifes
 Configure `Download:ManifestRoot` and `Download:ArtifactRoot`. Store manifests as `<root>/<channel>/<platform>-<architecture>.json` and artifacts as `<root>/sha256/<prefix>/<sha256>`. The service never accepts arbitrary filesystem paths or manifest URLs. Signature generation and publication stay outside this public serving process.
 
 Run endpoint and signed DownloadServer-to-Updater client artifact integration tests with `dotnet test Tests/Download.Tests.csproj -c Release`. The CI workflow checks out the Updater test seam at a pinned commit so these tests exercise both services without adding a runtime dependency between them.
+
+## Current verification status
+
+As of 2026-10-09, the signed-manifest and immutable-artifact endpoints are covered by 4 passing tests, including an integration flow that serves a signed manifest and client artifact to the Updater, then verifies the Ed25519 signature and artifact hash before caching. GitHub Actions [CI run 37937675593](https://github.com/Lancer-Nexus/Download/actions/runs/37937675593) passed for commit `ac75ed8d06c6244ccbdcf3231e13b0a0da58375e`. This validates the service-to-Updater test path; publishing production manifests and release artifacts remains to be configured and exercised.
