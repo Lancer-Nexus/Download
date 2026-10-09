@@ -1,3 +1,4 @@
+using System.Formats.Tar;
 using System.Security.Cryptography;
 using System.Text.Json;
 using LancerNexus.Download;
@@ -15,13 +16,13 @@ namespace LancerNexus.Download.Tests;
 public sealed class DownloadUpdaterIntegrationTests
 {
     [Fact]
-    public async Task SignedManifestAndClientArtifactFlowFromDownloadServerIntoUpdaterCache()
+    public async Task SignedClientDownloadFlowsFromServerThroughVerificationIntoReleaseStaging()
     {
         var root = Path.Combine(Path.GetTempPath(), "lancer-download-updater-e2e-" + Guid.NewGuid().ToString("N"));
         var manifestRoot = Path.Combine(root, "manifests");
         var artifactRoot = Path.Combine(root, "artifacts");
         var cacheRoot = Path.Combine(root, "cache");
-        var clientBytes = "synthetic Lancer Nexus client archive"u8.ToArray();
+        var clientBytes = CreateClientArchive();
         var hash = Convert.ToHexString(SHA256.HashData(clientBytes)).ToLowerInvariant();
         var artifactPath = Path.Combine(artifactRoot, "sha256", hash[..2], hash);
         Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
@@ -31,7 +32,9 @@ public sealed class DownloadUpdaterIntegrationTests
         var package = new UpdatePackage("client", "1.0.0", $"artifacts/{hash[..2]}/{hash}",
             clientBytes.Length, hash, true, "tar.zst");
         var now = DateTime.UtcNow;
-        var manifest = new UpdateManifest(1, 1, "stable", "linux", "x64", "1.0.0", "1.0.0", 1,
+        var platform = OperatingSystem.IsWindows() ? "win" : "linux";
+        var executableName = OperatingSystem.IsWindows() ? "lancer.exe" : "lancer";
+        var manifest = new UpdateManifest(1, 1, "stable", platform, "x64", "1.0.0", "1.0.0", 1,
             now.AddMinutes(-1), now.AddHours(1), [package])
         {
             BuildId = "synthetic-build-1",
@@ -58,7 +61,7 @@ public sealed class DownloadUpdaterIntegrationTests
         {
             ["Download:ManifestRoot"] = manifestRoot,
             ["Download:ArtifactRoot"] = artifactRoot,
-            ["Download:Platform"] = "linux",
+            ["Download:Platform"] = platform,
             ["Download:Architecture"] = "x64"
         });
         var app = DownloadServer.Build(builder);
@@ -67,15 +70,16 @@ public sealed class DownloadUpdaterIntegrationTests
             await app.StartAsync();
             var manifestUri = new Uri("https://downloads.example.test/v1/channels/stable/manifest");
             var artifactBaseUri = new Uri("https://downloads.example.test/v1/");
-            var options = new UpdaterOptions(manifestUri, "stable", "linux", "x64", "unused-trust-root.json",
+            var options = new UpdaterOptions(manifestUri, "stable", platform, "x64", "unused-trust-root.json",
                 ArtifactBaseUri: artifactBaseUri, CachePath: cacheRoot, InstallRootPath: Path.Combine(root, "install"));
             var trustRoot = new TrustRoot(1, 1,
                 [new TrustedKey("integration-key", "Ed25519", Convert.ToBase64String(publicKey))], 1);
 
+            UpdateManifest verifiedManifest;
             using (var handler = Rewriter(app.GetTestServer().CreateHandler()))
             {
                 var downloadedEnvelope = await ManifestClient.LoadAsync(manifestUri, CancellationToken.None, handler);
-                var verifiedManifest = ManifestVerifier.Validate(downloadedEnvelope, trustRoot, options, DateTime.UtcNow);
+                verifiedManifest = ManifestVerifier.Validate(downloadedEnvelope, trustRoot, options, DateTime.UtcNow);
                 Assert.Equal("1.0.0", verifiedManifest.ClientVersion);
             }
 
@@ -85,6 +89,15 @@ public sealed class DownloadUpdaterIntegrationTests
                     package, options, CancellationToken.None, handler);
                 Assert.Equal(clientBytes, await File.ReadAllBytesAsync(downloadedPath));
                 Assert.Equal(hash + ".package", Path.GetFileName(downloadedPath));
+
+                var staged = await ReleaseStager.StageClientAsync(
+                    verifiedManifest, package, downloadedPath, options, CancellationToken.None);
+                Assert.True(File.Exists(Path.Combine(staged, executableName)));
+                Assert.Equal("synthetic client executable"u8.ToArray(),
+                    await File.ReadAllBytesAsync(Path.Combine(staged, executableName)));
+                Assert.Equal("client payload"u8.ToArray(),
+                    await File.ReadAllBytesAsync(Path.Combine(staged, "assets", "marker.dat")));
+                Assert.True(File.Exists(Path.Combine(staged, "client-version.json")));
             }
         }
         finally
@@ -92,6 +105,33 @@ public sealed class DownloadUpdaterIntegrationTests
             await app.DisposeAsync();
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static byte[] CreateClientArchive()
+    {
+        var executableName = OperatingSystem.IsWindows() ? "lancer.exe" : "lancer";
+        using var tarBytes = new MemoryStream();
+        using (var tar = new TarWriter(tarBytes, TarEntryFormat.Pax, leaveOpen: true))
+        {
+            WriteEntry(tar, $"client-1.0.0/{executableName}", "synthetic client executable"u8.ToArray());
+            WriteEntry(tar, "client-1.0.0/assets/marker.dat", "client payload"u8.ToArray());
+        }
+
+        using var compressed = new MemoryStream();
+        using (var zstd = new ZstdSharp.CompressionStream(compressed, 3, 0, leaveOpen: true))
+            tarBytes.WriteTo(zstd);
+        return compressed.ToArray();
+    }
+
+    private static void WriteEntry(TarWriter tar, string name, byte[] bytes)
+    {
+        var entry = new PaxTarEntry(TarEntryType.RegularFile, name)
+        {
+            DataStream = new MemoryStream(bytes),
+            Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+        };
+        tar.WriteEntry(entry);
+        entry.DataStream.Dispose();
     }
 
     private static HttpMessageHandler Rewriter(HttpMessageHandler inner) => new HttpsTestHostHandler(inner);
