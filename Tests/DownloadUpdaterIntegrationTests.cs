@@ -98,6 +98,13 @@ public sealed class DownloadUpdaterIntegrationTests
                 Assert.Equal("client payload"u8.ToArray(),
                     await File.ReadAllBytesAsync(Path.Combine(staged, "assets", "marker.dat")));
                 Assert.True(File.Exists(Path.Combine(staged, "client-version.json")));
+
+                await DataPackageStager.WriteSnapshotAsync(staged, verifiedManifest, options.OptionalDataPackages,
+                    new Dictionary<string, string>(), CancellationToken.None);
+                var activeRelease = ReleaseActivator.Activate(staged, verifiedManifest, package, options);
+                Assert.True(Directory.Exists(activeRelease));
+                Assert.True(ReleaseActivator.IsCurrentVerified(verifiedManifest, package, options));
+                Assert.True(File.Exists(Path.Combine(options.InstallRootPath, "current.json")));
             }
         }
         finally
