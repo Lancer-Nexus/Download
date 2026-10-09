@@ -15,4 +15,4 @@ The .NET 10 host exposes `/health/live`, `/health/ready`, signed channel manifes
 
 Configure `Download:ManifestRoot` and `Download:ArtifactRoot`. Store manifests as `<root>/<channel>/<platform>-<architecture>.json` and artifacts as `<root>/sha256/<prefix>/<sha256>`. The service never accepts arbitrary filesystem paths or manifest URLs. Signature generation and publication stay outside this public serving process.
 
-Run endpoint integration tests with `dotnet test Tests/Download.Tests.csproj -c Release`.
+Run endpoint and signed DownloadServer-to-Updater client artifact integration tests with `dotnet test Tests/Download.Tests.csproj -c Release`. The CI workflow checks out the Updater test seam at a pinned commit so these tests exercise both services without adding a runtime dependency between them.

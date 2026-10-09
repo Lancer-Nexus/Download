@@ -12,12 +12,25 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: Lancer-Nexus/Download
+      - uses: actions/checkout@v4
+        with:
+          repository: Lancer-Nexus/Updater
+          ref: 48b4053a16c815e354c0c0ad9ddfc7656c2b150e
+          path: Lancer-Nexus/Updater
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore Download.csproj
+        working-directory: Lancer-Nexus/Download
       - run: dotnet restore Tests/Download.Tests.csproj
+        working-directory: Lancer-Nexus/Download
       - run: dotnet format Download.csproj --verify-no-changes --no-restore
+        working-directory: Lancer-Nexus/Download
       - run: dotnet format Tests/Download.Tests.csproj --verify-no-changes --no-restore
+        working-directory: Lancer-Nexus/Download
       - run: dotnet build Tests/Download.Tests.csproj --configuration Release --no-restore --warnaserror
+        working-directory: Lancer-Nexus/Download
       - run: dotnet test Tests/Download.Tests.csproj --configuration Release --no-build --logger trx --collect:"XPlat Code Coverage"
+        working-directory: Lancer-Nexus/Download
