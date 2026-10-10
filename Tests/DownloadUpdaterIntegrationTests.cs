@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Formats.Tar;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using LancerNexus.Download;
 using LancerNexus.Updater;
 using Microsoft.AspNetCore.Builder;
@@ -56,17 +57,73 @@ public sealed class DownloadUpdaterIntegrationTests
         };
         var privateKey = new Ed25519PrivateKeyParameters(Enumerable.Repeat((byte)7, 32).ToArray(), 0);
         var publicKey = privateKey.GeneratePublicKey().GetEncoded();
+        var keyObject = new JsonObject
+        {
+            ["keytype"] = "ed25519",
+            ["scheme"] = "ed25519",
+            ["keyval"] = new JsonObject { ["public"] = Convert.ToHexString(publicKey).ToLowerInvariant() }
+        };
+        var keyId = Convert.ToHexString(SHA256.HashData(
+            ManifestCanonicalizer.Canonicalize(JsonSerializer.SerializeToUtf8Bytes(keyObject)))).ToLowerInvariant();
+        var trustedKey = new TrustedKey(keyId, "Ed25519", Convert.ToBase64String(publicKey));
         var signedPayload = ManifestCanonicalizer.Serialize(manifest);
         var signer = new Ed25519Signer();
         signer.Init(true, privateKey);
         signer.BlockUpdate(signedPayload, 0, signedPayload.Length);
         var envelope = new SignedManifest(Convert.ToBase64String(signedPayload),
         [
-            new ManifestSignature("integration-key", "Ed25519", Convert.ToBase64String(signer.GenerateSignature()))
+            new ManifestSignature(keyId, "Ed25519", Convert.ToBase64String(signer.GenerateSignature()))
         ]);
         var manifestPath = Path.Combine(manifestRoot, "stable", $"{platform}-x64.json");
         Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
-        await File.WriteAllBytesAsync(manifestPath, JsonSerializer.SerializeToUtf8Bytes(envelope, TrustRoot.JsonOptions));
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(envelope, TrustRoot.JsonOptions);
+        await File.WriteAllBytesAsync(manifestPath, manifestBytes);
+
+        var manifestTargetPath = $"stable/{platform}-x64.json";
+        var targets = new JsonObject
+        {
+            [manifestTargetPath] = TargetInfo(manifestBytes),
+            [package.Url] = TargetInfo(clientBytes),
+            [dataPackage.Url] = TargetInfo(dataBytes)
+        };
+        var targetsBytes = SignTufMetadata(new JsonObject
+        {
+            ["_type"] = "targets",
+            ["spec_version"] = "1.0.36",
+            ["version"] = 4,
+            ["expires"] = now.AddDays(3).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            ["targets"] = targets
+        }, privateKey, keyId);
+        var snapshotBytes = SignTufMetadata(new JsonObject
+        {
+            ["_type"] = "snapshot",
+            ["spec_version"] = "1.0.36",
+            ["version"] = 3,
+            ["expires"] = now.AddDays(3).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            ["meta"] = new JsonObject { ["targets.json"] = MetadataInfo(4, targetsBytes) }
+        }, privateKey, keyId);
+        var timestampBytes = SignTufMetadata(new JsonObject
+        {
+            ["_type"] = "timestamp",
+            ["spec_version"] = "1.0.36",
+            ["version"] = 2,
+            ["expires"] = now.AddDays(1).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            ["meta"] = new JsonObject { ["snapshot.json"] = MetadataInfo(3, snapshotBytes) }
+        }, privateKey, keyId);
+        var tufMetadataDirectory = Path.Combine(manifestRoot, "metadata");
+        Directory.CreateDirectory(tufMetadataDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(tufMetadataDirectory, "timestamp.json"), timestampBytes);
+        await File.WriteAllBytesAsync(Path.Combine(tufMetadataDirectory, "3.snapshot.json"), snapshotBytes);
+        await File.WriteAllBytesAsync(Path.Combine(tufMetadataDirectory, "4.targets.json"), targetsBytes);
+
+        var trustRoot = new TrustRoot(1, 1, [trustedKey], 1)
+        {
+            TimestampRoleKeys = [trustedKey],
+            TimestampRoleThreshold = 1,
+            SnapshotRoleKeys = [trustedKey],
+            SnapshotRoleThreshold = 1,
+            ConsistentSnapshot = true
+        };
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -84,17 +141,28 @@ public sealed class DownloadUpdaterIntegrationTests
             var manifestUri = new Uri("https://downloads.example.test/v1/channels/stable/manifest");
             var artifactBaseUri = new Uri("https://downloads.example.test/v1/");
             var options = new UpdaterOptions(manifestUri, "stable", platform, "x64", "unused-trust-root.json",
-                ArtifactBaseUri: artifactBaseUri, CachePath: cacheRoot, InstallRootPath: Path.Combine(root, "install"));
-            var trustRoot = new TrustRoot(1, 1,
-                [new TrustedKey("integration-key", "Ed25519", Convert.ToBase64String(publicKey))], 1);
+                StatePath: Path.Combine(root, "manifest-version-state.json"), ArtifactBaseUri: artifactBaseUri,
+                CachePath: cacheRoot, InstallRootPath: Path.Combine(root, "install"))
+            {
+                TufMetadataBaseUri = new Uri("https://downloads.example.test/v1/metadata/"),
+                TufMetadataStatePath = Path.Combine(root, "tuf-version-state.json")
+            };
 
             UpdateManifest verifiedManifest;
-            using (var handler = Rewriter(app.GetTestServer().CreateHandler()))
-            {
-                var downloadedEnvelope = await ManifestClient.LoadAsync(manifestUri, CancellationToken.None, handler);
-                verifiedManifest = ManifestVerifier.Validate(downloadedEnvelope, trustRoot, options, DateTime.UtcNow);
-                Assert.Equal("1.0.0", verifiedManifest.ClientVersion);
-            }
+            var loaded = await UpdateMetadataLoader.LoadAsync(options, trustRoot, DateTime.UtcNow,
+                async (uri, token) =>
+                {
+                    using var handler = Rewriter(app.GetTestServer().CreateHandler());
+                    return await ManifestClient.LoadBytesAsync(uri, token, handler);
+                },
+                async (uri, token) =>
+                {
+                    using var handler = Rewriter(app.GetTestServer().CreateHandler());
+                    return await ManifestClient.LoadTufMetadataBytesAsync(uri, token, handler);
+                }, CancellationToken.None);
+            verifiedManifest = loaded.Manifest;
+            Assert.Equal("1.0.0", verifiedManifest.ClientVersion);
+            Assert.Equal(new TufMetadataVersions(2, 3, 4), loaded.TufRepository.Versions);
 
             string downloadedPath;
             using (var handler = Rewriter(app.GetTestServer().CreateHandler()))
@@ -212,6 +280,43 @@ public sealed class DownloadUpdaterIntegrationTests
         };
         tar.WriteEntry(entry);
         entry.DataStream.Dispose();
+    }
+
+    private static JsonObject TargetInfo(byte[] bytes) => new()
+    {
+        ["length"] = bytes.Length,
+        ["hashes"] = new JsonObject
+        {
+            ["sha256"] = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()
+        }
+    };
+
+    private static JsonObject MetadataInfo(long version, byte[] bytes) => new()
+    {
+        ["version"] = version,
+        ["length"] = bytes.Length,
+        ["hashes"] = new JsonObject
+        {
+            ["sha256"] = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()
+        }
+    };
+
+    private static byte[] SignTufMetadata(JsonObject signed, Ed25519PrivateKeyParameters privateKey, string keyId)
+    {
+        var payload = ManifestCanonicalizer.Canonicalize(JsonSerializer.SerializeToUtf8Bytes(signed));
+        var signer = new Ed25519Signer();
+        signer.Init(true, privateKey);
+        signer.BlockUpdate(payload, 0, payload.Length);
+        var envelope = new JsonObject
+        {
+            ["signed"] = signed,
+            ["signatures"] = new JsonArray(new JsonObject
+            {
+                ["keyid"] = keyId,
+                ["sig"] = Convert.ToHexString(signer.GenerateSignature()).ToLowerInvariant()
+            })
+        };
+        return JsonSerializer.SerializeToUtf8Bytes(envelope);
     }
 
     private static HttpMessageHandler Rewriter(HttpMessageHandler inner) => new HttpsTestHostHandler(inner);

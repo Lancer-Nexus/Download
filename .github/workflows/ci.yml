@@ -30,6 +30,8 @@ jobs:
         working-directory: Lancer-Nexus/Download
       - run: dotnet format Tests/Download.Tests.csproj --verify-no-changes --no-restore
         working-directory: Lancer-Nexus/Download
+      - run: dotnet format Publisher/Publisher.csproj --verify-no-changes --no-restore
+        working-directory: Lancer-Nexus/Download
       - run: dotnet build Tests/Download.Tests.csproj --configuration Release --no-restore --warnaserror
         working-directory: Lancer-Nexus/Download
       - run: dotnet test Tests/Download.Tests.csproj --configuration Release --no-build --logger trx --collect:"XPlat Code Coverage"
